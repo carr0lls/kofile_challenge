@@ -24,32 +24,23 @@ app.get('/api', function(req, res) {
 app.get('/api/order/fees', function(req, res) {
 	orders = (req.query.orders) ? JSON.parse(req.query.orders) : null;
 
-	getOrderFees(orders, function(err, data) {
-		if (err)
-			res.status(500).json({ error: err.reason });
-		else
-			res.json(data);
-	});
+	getOrderFees(orders)
+		.then((data) => res.json(data))
+		.catch((err) => res.status(500).json({ error: err.reason }));
 });
 app.get('/api/order/distributions', function(req, res) {
 	orders = (req.query.orders) ? JSON.parse(req.query.orders) : null;
 
-	getOrderDistributions(orders, function(err, data) {
-		if (err)
-			res.status(500).json({ error: err.reason });
-		else
-			res.json(data);
-	});
+	getOrderDistributions(orders)
+		.then((data) => res.json(data))
+		.catch((err) => res.status(500).json({ error: err.reason }));
 });
 app.get('/api/order/aggregated-distributions', function(req, res) {
 	orders = (req.query.orders) ? JSON.parse(req.query.orders) : null;
 
-	getAggregatedOrderDistributions(orders, function(err, data) {
-		if (err)
-			res.status(500).json({ error: err.reason });
-		else
-			res.json(data);
-	});
+	getAggregatedOrderDistributions(orders)
+		.then((data) => res.json(data))
+		.catch((err) => res.status(500).json({ error: err.reason }));
 });
 
 app.listen(app.get('port'), function() {
@@ -57,191 +48,201 @@ app.listen(app.get('port'), function() {
 });
 
 
-function getOrderFees(orders, cb) {
-	if (!orders || orders.constructor !== Array)
-		cb({reason: "Invalid orders input."}, null);
+function getOrderFees(orders) {
+	return new Promise((resolve, reject) => {
+		if (!orders || orders.constructor !== Array)
+			reject({reason: "Invalid orders input."});
 
-	let amount, totalAmount, orderData = {};
+		let amount, totalAmount, orderData = {};
 
-	for (let order of orders) {
-		orderData[order.order_number] = { items: [] };
-		totalAmount = 0;
+		for (let order of orders) {
+			orderData[order.order_number] = { items: [] };
+			totalAmount = 0;
 
-		for (let orderItem of order.order_items) {
-			amount = 0;
+			for (let orderItem of order.order_items) {
+				amount = 0;
 
-			for (let fee of feesTable.fees[orderItem.type]) {
-				switch (fee.type) {
-					case 'flat':
-						amount += parseFloat(fee.amount);
-						break;
-					case 'per-page':
-						amount += parseFloat(fee.amount) * (orderItem.pages - 1);
-						break;
-					default:
-						break;
+				for (let fee of feesTable.fees[orderItem.type]) {
+					switch (fee.type) {
+						case 'flat':
+							amount += parseFloat(fee.amount);
+							break;
+						case 'per-page':
+							amount += parseFloat(fee.amount) * (orderItem.pages - 1);
+							break;
+						default:
+							break;
+					}
 				}
+				totalAmount += amount;
+				orderData[order.order_number]['items'].push({[orderItem.type]: amount.toFixed(2)});
 			}
-			totalAmount += amount;
-			orderData[order.order_number]['items'].push({[orderItem.type]: amount.toFixed(2)});
+			orderData[order.order_number]['total'] = totalAmount.toFixed(2);
 		}
-		orderData[order.order_number]['total'] = totalAmount.toFixed(2);
-	}
-	cb(null, orderData);
+		resolve(orderData);
+	});
 }
 
-function getOrderDistributions(orders, cb) {
-	if (!orders || orders.constructor !== Array)
-		cb({reason: "Invalid orders input."}, null);
+function getOrderDistributions(orders) {
+	return new Promise((resolve, reject) => {
+		if (!orders || orders.constructor !== Array)
+			reject({reason: "Invalid orders input."});
 
-	let amount, distAmount, totalDistAmount, otherAmount, orderData = { total_funds: {} };
+		let amount, distAmount, totalDistAmount, otherAmount, orderData = { total_funds: {} };
 
-  	for (let order of orders) {
-		orderData[order.order_number] = { funds: [] };
+	  	for (let order of orders) {
+			orderData[order.order_number] = { funds: [] };
 
-		for (let orderItem of order.order_items) {
-			amount = 0;
-			distAmount = 0;
+			for (let orderItem of order.order_items) {
+				amount = 0;
+				distAmount = 0;
+				totalDistAmount = 0;
+
+				for (let fee of feesTable.fees[orderItem.type]) {
+					switch (fee.type) {
+						case 'flat':
+							amount += parseFloat(fee.amount);
+							break;
+						case 'per-page':
+							amount += parseFloat(fee.amount) * (orderItem.pages - 1);
+							break;
+						default:
+							break;
+					}
+				}
+
+				for (let dist of feesTable.distributions[orderItem.type]) {
+					distAmount = parseFloat(dist.amount);
+					totalDistAmount += distAmount;
+					orderData['total_funds'][dist.name] = (!orderData['total_funds'][dist.name]) ? 
+						parseFloat(distAmount).toFixed(2) : (parseFloat(orderData['total_funds'][dist.name]) + parseFloat(distAmount)).toFixed(2);
+					orderData[order.order_number]['funds'].push({[dist.name]: distAmount.toFixed(2)});
+				}
+
+				if (amount > totalDistAmount) {
+					otherAmount = amount - totalDistAmount;
+					orderData['total_funds']['Other'] = (!orderData['total_funds']['Other']) ? 
+						parseFloat(otherAmount).toFixed(2) : (parseFloat(orderData['total_funds']['Other']) + parseFloat(otherAmount)).toFixed(2);
+					orderData[order.order_number]['funds'].push({['Other']: otherAmount.toFixed(2)});
+				}
+			}
+		}
+
+		resolve(orderData);
+	});
+}
+
+function getAggregatedOrderDistributions(orders) {
+	return new Promise((resolve, reject) => {
+		if (!orders || orders.constructor !== Array)
+			reject({reason: "Invalid orders input."});
+
+		let distAmount, totalDistAmount, currentDistributions, orderData = { total_funds: {} };
+
+	 	for (let order of orders) {
+			orderData[order.order_number] = { funds: [] };
+			orderAmount = 0;
 			totalDistAmount = 0;
+			currentDistributions = {};
 
-			for (let fee of feesTable.fees[orderItem.type]) {
-				switch (fee.type) {
-					case 'flat':
-						amount += parseFloat(fee.amount);
-						break;
-					case 'per-page':
-						amount += parseFloat(fee.amount) * (orderItem.pages - 1);
-						break;
-					default:
-						break;
+			for (let orderItem of order.order_items) {
+				for (let fee of feesTable.fees[orderItem.type]) {
+					switch (fee.type) {
+						case 'flat':
+							orderAmount += parseFloat(fee.amount);
+							break;
+						case 'per-page':
+							orderAmount += parseFloat(fee.amount) * (orderItem.pages - 1);
+							break;
+						default:
+							break;
+					}
+				}
+
+				for (let dist of feesTable.distributions[orderItem.type]) {
+					distAmount = parseFloat(dist.amount);
+					totalDistAmount += distAmount;
+					currentDistributions[dist.name] = (!currentDistributions[dist.name]) ? 
+						distAmount : currentDistributions[dist.name] + distAmount;
 				}
 			}
 
-			for (let dist of feesTable.distributions[orderItem.type]) {
-				distAmount = parseFloat(dist.amount);
-				totalDistAmount += distAmount;
-				orderData['total_funds'][dist.name] = (!orderData['total_funds'][dist.name]) ? 
-					parseFloat(distAmount).toFixed(2) : (parseFloat(orderData['total_funds'][dist.name]) + parseFloat(distAmount)).toFixed(2);
-				orderData[order.order_number]['funds'].push({[dist.name]: distAmount.toFixed(2)});
+			if (orderAmount > totalDistAmount)
+				currentDistributions['Other'] = orderAmount - totalDistAmount;
+
+			for (let dist in currentDistributions) {
+				orderData['total_funds'][dist] = (!orderData['total_funds'][dist]) ? 
+					 parseFloat(currentDistributions[dist]).toFixed(2) : (parseFloat(orderData['total_funds'][dist]) + parseFloat(currentDistributions[dist])).toFixed(2);
+				orderData[order.order_number]['funds'].push({[dist]: currentDistributions[dist].toFixed(2)});
 			}
 
-			if (amount > totalDistAmount) {
-				otherAmount = amount - totalDistAmount;
-				orderData['total_funds']['Other'] = (!orderData['total_funds']['Other']) ? 
-					parseFloat(otherAmount).toFixed(2) : (parseFloat(orderData['total_funds']['Other']) + parseFloat(otherAmount)).toFixed(2);
-				orderData[order.order_number]['funds'].push({['Other']: otherAmount.toFixed(2)});
-			}
 		}
-
-	}
-
-	cb(null, orderData);
+		resolve(orderData);
+	});
 }
 
-function getAggregatedOrderDistributions(orders, cb) {
-	if (!orders || orders.constructor !== Array)
-		cb({reason: "Invalid orders input."}, null);
 
-	let distAmount, totalDistAmount, currentDistributions, orderData = { total_funds: {} };
+getOrderFees(orders)
+		.then((data) => {
+			for (let orderId in data) {
+				console.log(`Order ID: ${orderId}`);
 
- 	for (let order of orders) {
-		orderData[order.order_number] = { funds: [] };
-		orderAmount = 0;
-		totalDistAmount = 0;
-		currentDistributions = {};
-
-		for (let orderItem of order.order_items) {
-			for (let fee of feesTable.fees[orderItem.type]) {
-				switch (fee.type) {
-					case 'flat':
-						orderAmount += parseFloat(fee.amount);
-						break;
-					case 'per-page':
-						orderAmount += parseFloat(fee.amount) * (orderItem.pages - 1);
-						break;
-					default:
-						break;
+				for (let item of data[orderId].items) {
+					for (let type in item)
+						console.log(`	Order item ${type}: $${item[type]}`);
 				}
+
+				console.log(`\n	Order total: $${data[orderId].total}\n`);
+			}
+		})
+		.catch((err) => console.log({ error: err.reason }));
+
+getOrderDistributions(orders)
+	.then((data) => {
+		for (let orderId in data) {
+			if (isNaN(orderId))
+				continue;
+
+			console.log(`Order ID: ${orderId}`);
+
+			for (let fund of data[orderId].funds) {
+				for (let type in fund)
+					console.log(`	Fund - ${type}: $${fund[type]}`);
 			}
 
-			for (let dist of feesTable.distributions[orderItem.type]) {
-				distAmount = parseFloat(dist.amount);
-				totalDistAmount += distAmount;
-				currentDistributions[dist.name] = (!currentDistributions[dist.name]) ? 
-					distAmount : currentDistributions[dist.name] + distAmount;
+			console.log(`\n`);
+		}
+
+		console.log(`Total distributions:`);
+		
+		for (let dist in data['total_funds'])
+			console.log(`	Fund - ${dist}: $${data['total_funds'][dist]}`);
+
+		console.log(`\n`);
+	})
+	.catch((err) => console.log({ error: err.reason }));
+
+getAggregatedOrderDistributions(orders)
+	.then((data) => {
+		for (let orderId in data) {
+			if (isNaN(orderId))
+				continue;
+
+			console.log(`Order ID: ${orderId}`);
+
+			for (let fund of data[orderId].funds) {
+				for (let type in fund)
+					console.log(`	Fund - ${type}: $${fund[type]}`);
 			}
+
+			console.log(`\n`);
 		}
 
-		if (orderAmount > totalDistAmount)
-			currentDistributions['Other'] = orderAmount - totalDistAmount;
-
-		for (let dist in currentDistributions) {
-			orderData['total_funds'][dist] = (!orderData['total_funds'][dist]) ? 
-				 parseFloat(currentDistributions[dist]).toFixed(2) : (parseFloat(orderData['total_funds'][dist]) + parseFloat(currentDistributions[dist])).toFixed(2);
-			orderData[order.order_number]['funds'].push({[dist]: currentDistributions[dist].toFixed(2)});
-		}
-
-	}
-
-	cb(null, orderData);
-}
-
-
-getOrderFees(orders, function(err, data) {
-	for (let orderId in data) {
-		console.log(`Order ID: ${orderId}`);
-
-		for (let item of data[orderId].items) {
-			for (let type in item)
-				console.log(`	Order item ${type}: $${item[type]}`);
-		}
-
-		console.log(`\n	Order total: $${data[orderId].total}\n`);
-	}
-});
-
-getOrderDistributions(orders, function(err, data) {
-	for (let orderId in data) {
-		if (isNaN(orderId))
-			continue;
-
-		console.log(`Order ID: ${orderId}`);
-
-		for (let fund of data[orderId].funds) {
-			for (let type in fund)
-				console.log(`	Fund - ${type}: $${fund[type]}`);
-		}
+		console.log(`Total distributions:`);
+		
+		for (let dist in data['total_funds'])
+			console.log(`	Fund - ${dist}: $${data['total_funds'][dist]}`);
 
 		console.log(`\n`);
-	}
-
-	console.log(`Total distributions:`);
-	
-	for (let dist in data['total_funds'])
-		console.log(`	Fund - ${dist}: $${data['total_funds'][dist]}`);
-
-	console.log(`\n`);
-});
-
-getAggregatedOrderDistributions(orders, function(err, data) {
-	for (let orderId in data) {
-		if (isNaN(orderId))
-			continue;
-
-		console.log(`Order ID: ${orderId}`);
-
-		for (let fund of data[orderId].funds) {
-			for (let type in fund)
-				console.log(`	Fund - ${type}: $${fund[type]}`);
-		}
-
-		console.log(`\n`);
-	}
-
-	console.log(`Total distributions:`);
-	
-	for (let dist in data['total_funds'])
-		console.log(`	Fund - ${dist}: $${data['total_funds'][dist]}`);
-
-	console.log(`\n`);
-});
+	})
+	.catch((err) => console.log({ error: err.reason }));
